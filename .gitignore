@@ -1,0 +1,10 @@
+.DS_Store
+__pycache__/
+*.pyc
+venv/
+.pytest_cache/
+.vscode/
+.env
+
+# SQLite database (MP3)
+data/
