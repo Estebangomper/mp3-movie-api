@@ -3,7 +3,7 @@ import logging
 from pathlib import Path
 import pandas as pd
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
-from src import HealthResponse, ProcessConfig, log_requests, setup_logging
+from src import HealthResponse, MovieCache, ProcessConfig, log_requests, setup_logging
 from src import (
     MovieStorage,
     MovieUploadInfo,
@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Movie API", version="1.0.0")
 storage = MovieStorage()
+cache = MovieCache()
 app.middleware("http")(log_requests)
 
 @app.get("/health", response_model=HealthResponse)
@@ -53,6 +54,7 @@ async def upload_movies(file: UploadFile = File(...)):
     df = df[MOVIE_COLUMNS]
 
     storage.save(df)
+    cache.invalidate()
     logger.info(f"Uploaded movies: filename={file.filename}, rows={len(df)}")
     return {
         "filename": file.filename,
@@ -63,11 +65,19 @@ async def upload_movies(file: UploadFile = File(...)):
 
 @app.get("/movies", response_model=MovieDataResponse)
 def get_movies(limit: int = Query(default=100, ge=1)):
-    """Return up to limit stored movies and the total count."""
+    """Return up to limit stored movies and the total count, using the cache."""
+    cached = cache.get(limit)
+    if cached is not None:
+        logger.info(f"Returned cached movies: limit={limit}")
+        return cached
+
     records = storage.select_columns(MOVIE_COLUMNS, limit)
     total_rows = storage.count_movies()
+    response = {"data": records, "total_rows": total_rows}
+
+    cache.set(limit, response)
     logger.info(f"Retrieved movies: returned_rows={len(records)}")
-    return {"data": records, "total_rows": total_rows}
+    return response
 
 @app.get("/movies/search", response_model=list[dict])
 def query_movies(
@@ -121,6 +131,7 @@ def process_movies(config: ProcessConfig):
             raise HTTPException(status_code=400, detail=f"Processing removed movie column: {column}. Use missing axis 'rows'.")
 
     storage.save(processed_df)
+    cache.invalidate()
     logger.info(f"Processed movies: validation_removed={validation_rows_removed}, rows_before={len(df_before)}, rows_after={len(processed_df)}")
     return {
         "validation_rows_removed": validation_rows_removed,
